@@ -1,39 +1,45 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
-var numProducers = 2
-var numWorkers = 10 // per producer
-var numMessages = 2 // per worker
+var numProducers = 1
+var numWorkers = 1 // per producer
+var secondsToRun = 10
 var topic = "pref-test-topic"
 
 func main() {
-	finished := make(chan int)
-	var messageCount int32
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secondsToRun)*time.Second)
+	defer cancel()
 
-	createProducers(finished, numProducers, numWorkers, numMessages, &messageCount)
+	total := make(chan int, 10)
 
-	done := 0
-	for i := range finished {
-		done = done + i
-		if done == numProducers*numWorkers {
-			fmt.Println("Finished")
-			fmt.Printf("Total Messages: %d\n", messageCount)
-			os.Exit(1)
+	go func() {
+		count := 0
+		start := time.Now()
+		for i := range total {
+			count = count + i
+			if count > 1000 {
+				count = 0
+				elapsed := time.Since(start)
+				fmt.Printf("messages: %.0f m/s\n", 1000/elapsed.Seconds())
+				start = time.Now()
+			}
 		}
-	}
+	}()
+
+	createProducers(ctx, total, numProducers, numWorkers)
+	<-ctx.Done()
 }
 
-func createProducers(f chan<- int, producers, workers, messages int, messageCount *int32) {
+func createProducers(ctx context.Context, total chan<- int, producers, workers int) {
 	for n := 0; n < producers; n++ {
 		p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": "localhost"})
 		if err != nil {
@@ -42,25 +48,27 @@ func createProducers(f chan<- int, producers, workers, messages int, messageCoun
 		fmt.Printf("Created Producer %d\n", n)
 
 		for i := 0; i < workers; i++ {
-			go worker(p, f, messageCount, messages)
+			go worker(ctx, total, p)
 			fmt.Printf("Created Worker %d:%d\n", n, i)
 		}
 	}
 }
 
-func worker(p *kafka.Producer, f chan<- int, messageCount *int32, n int) {
-	for i := 0; i < n; i++ {
+func worker(ctx context.Context, total chan<- int, p *kafka.Producer) error {
+	for {
 		err := write(p, createMessage())
 		if err != nil {
 			log.Fatal(err)
 		}
-		atomic.AddInt32(messageCount, 1)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case total <- 1:
+		}
 	}
-	f <- 1
 }
 
 func write(p *kafka.Producer, msg message) error {
-	fmt.Printf("%+v\n", "Writing Message")
 	deliveryChan := make(chan kafka.Event)
 
 	value, err := json.Marshal(msg)
@@ -88,7 +96,6 @@ func write(p *kafka.Producer, msg message) error {
 	}
 
 	close(deliveryChan)
-	fmt.Println("Wrote Message")
 	return nil
 }
 
