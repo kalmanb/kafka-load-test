@@ -10,10 +10,13 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
-var numProducers = 1
-var numWorkers = 1 // per producer
+var numProducers = 2
+var numWorkers = 20 // per producer
+var batchSize = 10
+var batchWait = 100 //ms
 var secondsToRun = 10
 var topic = "pref-test-topic"
+var secure = false // Use SASL
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(secondsToRun)*time.Second)
@@ -29,7 +32,7 @@ func main() {
 			if count > 1000 {
 				count = 0
 				elapsed := time.Since(start)
-				fmt.Printf("messages: %.0f m/s\n", 1000/elapsed.Seconds())
+				fmt.Printf("messages: %.0fm/s\n", 1000/elapsed.Seconds())
 				start = time.Now()
 			}
 		}
@@ -41,7 +44,21 @@ func main() {
 
 func createProducers(ctx context.Context, total chan<- int, producers, workers int) {
 	for n := 0; n < producers; n++ {
-		p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": "localhost"})
+		config := kafka.ConfigMap{
+			"bootstrap.servers":      "localhost",
+			"batch.num.messages":     batchSize,
+			"queue.buffering.max.ms": batchWait,
+		}
+		if secure {
+			config["acks"] = "all"
+			// config["debug"] = "all"
+			//SASL:
+			config["security.protocol"] = "SASL_PLAINTEXT"
+			config["sasl.mechanisms"] = "GSSAPI"
+			config["sasl.kerberos.principal"] = "kafka"
+			config["sasl.kerberos.service.name"] = "kafka"
+		}
+		p, err := kafka.NewProducer(&config)
 		if err != nil {
 			panic(err)
 		}
